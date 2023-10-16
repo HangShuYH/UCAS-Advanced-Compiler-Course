@@ -68,6 +68,17 @@ public:
          Visit(forStmt->getInc());
       }
    }
+   virtual void VisitWhileStmt(WhileStmt* whileStmt) {
+      while(true) {
+         Expr* cond = whileStmt->getCond();
+         Visit(cond);
+         if (mEnv->getCond(cond)) {
+            Visit(whileStmt->getBody());
+         } else {
+            break;
+         }
+      }
+   }
    // virtual void VisitArraySubscriptExpr(ArraySubscriptExpr* arraySubscriptExpr) {
    //    VisitStmt(arraySubscriptExpr);
    //    mEnv->arraySubscriptExpr(arraySubscriptExpr);
