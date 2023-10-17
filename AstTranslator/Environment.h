@@ -83,6 +83,9 @@ public:
    void bindDecl(Decl* decl, Value val) {
       mVars[decl] = val;
    }    
+   bool hasDeclVal(Decl* decl) {
+	  return mVars.find(decl) != mVars.end();
+   }
    Value& getDeclVal(Decl * decl) {
       assert (mVars.find(decl) != mVars.end());
       return mVars.find(decl)->second;
@@ -118,10 +121,21 @@ public:
    int get(int addr);
 };
 */
-
+class GlobalRegion {
+   std::map<Decl *, Value> mVars;
+public:
+	void bindDecl(Decl* decl, Value val) {
+		mVars[decl] = val;
+	}
+	Value& getDecl(Decl* decl) {
+		assert(mVars.find(decl) != mVars.end());
+		return mVars[decl];
+	}
+};
 
 class Environment {
    std::vector<StackFrame> mStack;
+   GlobalRegion mGBRegion;
 
    FunctionDecl * mFree;				/// Declartions to the built-in functions
    FunctionDecl * mMalloc;
@@ -146,6 +160,8 @@ public:
 			   else if (fdecl->getName().equals("GET")) mInput = fdecl;
 			   else if (fdecl->getName().equals("PRINT")) mOutput = fdecl;
 			   else if (fdecl->getName().equals("main")) mEntry = fdecl;
+		   } else if (VarDecl* vdecl = dyn_cast<VarDecl>(*i)) {
+			   mGBRegion.bindDecl(vdecl, Value(0));
 		   }
 	   }
 	   mStack.push_back(StackFrame());
@@ -232,7 +248,12 @@ public:
 		   if (declref->getType()->isArrayType()) {
 			 	mStack.back().bindStmt(declref, Value(decl));
 		   } else {
-				Value val = mStack.back().getDeclVal(decl);
+				Value val;
+				if (mStack.back().hasDeclVal(decl)) {
+					val = mStack.back().getDeclVal(decl);
+				} else {
+					val = mGBRegion.getDecl(decl);
+				}
 				mStack.back().bindStmt(declref, val);
 		   }
 	   }
