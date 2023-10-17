@@ -11,4 +11,7 @@ int main() {
     for (int i = 0;i < 5; i = i + 1) {
         PRINT(a[i]);
    }
+   int b;
+   b = a[2];
+   PRINT(b);
 }

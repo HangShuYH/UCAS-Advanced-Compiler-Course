@@ -24,18 +24,31 @@
 using namespace clang;
 
 class Value {
-	union {
-		int intVal;
-		Decl* addrVal;
-	};
-	enum ValueType{IntVal,AddrVal}type;
+	int intVal;
+	Decl* addrVal;
+	std::vector<int> arrayVal;
+	enum ValueType{IntType,AddrType,ArrayType}type;
+
 public:
-	Value(int val = 0):intVal(val), type(IntVal) {}
-	explicit Value(Decl* val):addrVal(val), type(AddrVal) {}
-	bool isIntVal() const {return type == IntVal;}
-	bool isAddrVal() const {return type == AddrVal;}
+	Value(int val = 0):intVal(val), type(IntType) {}
+	explicit Value(Decl* val):addrVal(val), type(AddrType) {}
+	explicit Value(std::vector<int> val):arrayVal(val), type(ArrayType) {}
+	bool isIntType() const {return type == IntType;}
+	bool isAddrType() const {return type == AddrType;}
+	bool isArrayType() const {return type == ArrayType;}
+	void setArrayType() {type = ArrayType;}
 	int getInt() const {return intVal;}
 	Decl* getAddr() const {return addrVal;}
+	void setArrayVal(int idx, int val) {
+		assert(type == ArrayType);
+		assert(idx < arrayVal.size());
+		arrayVal[idx] = val;
+	}
+	int getArrayVal(int idx) const {
+		assert(type == ArrayType);
+		assert(idx < arrayVal.size());
+		return arrayVal[idx];
+	}
 };
 
 class StackFrame {
@@ -45,6 +58,7 @@ class StackFrame {
    std::map<Stmt*, Value> mExprs;
 
    std::map<Stmt*, Value> mAddrs;
+   std::map<Stmt*, int> mCursors;
    /// The current stmt
    Stmt * mPC;
 public:
@@ -54,13 +68,22 @@ public:
    void bindAddr(Stmt* stmt, Value val) {
 	  mAddrs[stmt] = val;
    }
+   void bindCursor(Stmt* stmt, int idx) {
+	  mCursors[stmt] = idx;
+   }
+   int getCursor(Stmt* stmt) {
+	  return mCursors[stmt];
+   }
+   bool hasCursor(Stmt* stmt) {
+	  return mCursors.find(stmt) != mCursors.end();
+   }
    Value getAddr(Stmt* stmt) {
 	  return mAddrs[stmt];
    }
    void bindDecl(Decl* decl, Value val) {
       mVars[decl] = val;
    }    
-   Value getDeclVal(Decl * decl) {
+   Value& getDeclVal(Decl * decl) {
       assert (mVars.find(decl) != mVars.end());
       return mVars.find(decl)->second;
    }
@@ -144,8 +167,13 @@ public:
 			   Decl * decl = declexpr->getFoundDecl();
 			   mStack.back().bindDecl(decl, val);
 		   } else {
-			   Decl* decl = mStack.back().getAddr(left).getAddr();
-			   mStack.back().bindDecl(decl, val);
+			   Value value = mStack.back().getAddr(left);
+			   Decl* decl = value.getAddr();
+			   if (mStack.back().hasCursor(left)) {
+					mStack.back().getDeclVal(decl).setArrayVal(mStack.back().getCursor(left), val.getInt());
+			   } else {
+			   		mStack.back().bindDecl(decl, val);
+			   }
 		   }
 		   return;
 	    }
@@ -181,19 +209,17 @@ public:
 		mStack.back().bindStmt(bop, resultVal);
     }
 
-   void decl(DeclStmt * declstmt) {
+    void decl(DeclStmt * declstmt) {
 	   for (DeclStmt::decl_iterator it = declstmt->decl_begin(), ie = declstmt->decl_end();
 			   it != ie; ++ it) {
 		   Decl * decl = *it;
 		   if (VarDecl * vardecl = dyn_cast<VarDecl>(decl)) {
-			//    if (auto constantArrayType = dyn_cast<ConstantArrayType>(vardecl->getType().getTypePtr())) {
-			// 		for (int i = 0;i < constantArrayType->getSize().getSExtValue(); i++) {
-			// 			mStack.back().bindDecl(vardecl, 0);
-			// 		}
-			//    } else {
-			//    		mStack.back().bindDecl(vardecl, 0);
-			//    }
-			   mStack.back().bindDecl(vardecl, 0);
+			   if (auto constantArrayType = dyn_cast<ConstantArrayType>(vardecl->getType().getTypePtr())) {
+					std::vector<int> vec(constantArrayType->getSize().getSExtValue());
+					mStack.back().bindDecl(vardecl, Value(vec));
+			   } else {
+			   		mStack.back().bindDecl(vardecl, 0);
+			   }
 		   }
 		   
 	   }
@@ -203,9 +229,12 @@ public:
 	   mStack.back().setPC(declref);
 	   if (!declref->getType()->isFunctionType()) {
 		   Decl* decl = declref->getFoundDecl();
-
-		   Value val = mStack.back().getDeclVal(decl);
-		   mStack.back().bindStmt(declref, val);
+		   if (declref->getType()->isArrayType()) {
+			 	mStack.back().bindStmt(declref, Value(decl));
+		   } else {
+				Value val = mStack.back().getDeclVal(decl);
+				mStack.back().bindStmt(declref, val);
+		   }
 	   }
    }
 
@@ -270,11 +299,15 @@ public:
 	  return mStack.back().getStmtVal(cond, mContext).getInt() != 0;
    }
 
-//    void arraySubscriptExpr(ArraySubscriptExpr* arraySubscriptExpr) {
-// 	  mStack.back().setPC(arraySubscriptExpr);
-// 	  int idx = mStack.back().getStmtVal(arraySubscriptExpr->getIdx(), mContext);
-	  
-//    }
+   void arraySubscriptExpr(ArraySubscriptExpr* arraySubscriptExpr) {
+	  mStack.back().setPC(arraySubscriptExpr);
+	  int idx = mStack.back().getStmtVal(arraySubscriptExpr->getIdx(), mContext).getInt();
+	  Decl* base = mStack.back().getStmtVal(arraySubscriptExpr->getBase(), mContext).getAddr();
+	  Value value = mStack.back().getDeclVal(base);
+	  mStack.back().bindStmt(arraySubscriptExpr, value.getArrayVal(idx));
+	  mStack.back().bindAddr(arraySubscriptExpr, Value(base));
+	  mStack.back().bindCursor(arraySubscriptExpr, idx);
+   }
 };
 
 

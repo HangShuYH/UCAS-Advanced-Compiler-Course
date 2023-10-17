@@ -79,10 +79,10 @@ public:
          }
       }
    }
-   // virtual void VisitArraySubscriptExpr(ArraySubscriptExpr* arraySubscriptExpr) {
-   //    VisitStmt(arraySubscriptExpr);
-   //    mEnv->arraySubscriptExpr(arraySubscriptExpr);
-   // }
+   virtual void VisitArraySubscriptExpr(ArraySubscriptExpr* arraySubscriptExpr) {
+      VisitStmt(arraySubscriptExpr);
+      mEnv->arraySubscriptExpr(arraySubscriptExpr);
+   }
 private:
    Environment * mEnv;
 };
