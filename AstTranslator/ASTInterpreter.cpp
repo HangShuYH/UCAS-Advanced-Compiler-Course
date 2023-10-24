@@ -1,6 +1,7 @@
 //==--- tools/clang-check/ClangInterpreter.cpp - Clang Interpreter tool --------------===//
 //===----------------------------------------------------------------------===//
-
+#include "Environment.h"
+#include "ASTInterpreter.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/EvaluatedExprVisitor.h"
 #include "clang/AST/Expr.h"
@@ -16,76 +17,67 @@ using namespace clang;
 
 #include "Environment.h"
 
-class InterpreterVisitor : 
-   public EvaluatedExprVisitor<InterpreterVisitor> {
-public:
-   explicit InterpreterVisitor(const ASTContext &context, Environment * env)
-   : EvaluatedExprVisitor(context), mEnv(env) {}
-   virtual ~InterpreterVisitor() {}
 
-   virtual void VisitBinaryOperator(BinaryOperator * bop) {
-      VisitStmt(bop);
-	   mEnv->binop(bop);
+void InterpreterVisitor::VisitBinaryOperator(BinaryOperator * bop) {
+   VisitStmt(bop);
+   mEnv->binop(bop);
+}
+void InterpreterVisitor::VisitDeclRefExpr(DeclRefExpr *expr) {
+   VisitStmt(expr);
+   mEnv->declref(expr);
+}
+void InterpreterVisitor::VisitCastExpr(CastExpr *expr) {
+   VisitStmt(expr);
+   mEnv->cast(expr);
+}
+void InterpreterVisitor::VisitCallExpr(CallExpr *call) {
+   VisitStmt(call);
+   mEnv->call(call);
+}
+void InterpreterVisitor::VisitDeclStmt(DeclStmt *declstmt) {
+   mEnv->decl(declstmt);
+}
+void InterpreterVisitor::VisitUnaryOperator(UnaryOperator *unaryOperator) {
+   VisitStmt(unaryOperator);
+   mEnv->unary(unaryOperator);
+}
+void InterpreterVisitor::VisitIfStmt(IfStmt *ifstmt) {
+   Expr* cond = ifstmt->getCond();
+   Visit(cond);
+   if (mEnv->getCond(cond)) {
+      Visit(ifstmt->getThen());
+   } else if (ifstmt->hasElseStorage()) {
+      Visit(ifstmt->getElse());
    }
-   virtual void VisitDeclRefExpr(DeclRefExpr * expr) {
-	   VisitStmt(expr);
-	   mEnv->declref(expr);
-   }
-   virtual void VisitCastExpr(CastExpr * expr) {
-	   VisitStmt(expr);
-	   mEnv->cast(expr);
-   }
-   virtual void VisitCallExpr(CallExpr * call) {
-	   VisitStmt(call);
-	   mEnv->call(call);
-   }
-   virtual void VisitDeclStmt(DeclStmt * declstmt) {
-	   mEnv->decl(declstmt);
-   }
-   virtual void VisitUnaryOperator(UnaryOperator* unaryOperator) {
-      VisitStmt(unaryOperator);
-      mEnv->unary(unaryOperator);
-   }
-   virtual void VisitIfStmt(IfStmt* ifstmt) {
-      Expr* cond = ifstmt->getCond();
+}
+void InterpreterVisitor::VisitForStmt(ForStmt *forStmt) {
+   Visit(forStmt->getInit());
+   while(true) {
+      Expr* cond = forStmt->getCond();
       Visit(cond);
       if (mEnv->getCond(cond)) {
-         Visit(ifstmt->getThen());
-      } else if (ifstmt->hasElseStorage()) {
-         Visit(ifstmt->getElse());
+         Visit(forStmt->getBody());
+      } else {
+         break;
+      }
+      Visit(forStmt->getInc());
+   }
+}
+void InterpreterVisitor::VisitWhileStmt(WhileStmt *whileStmt) {
+   while(true) {
+      Expr* cond = whileStmt->getCond();
+      Visit(cond);
+      if (mEnv->getCond(cond)) {
+         Visit(whileStmt->getBody());
+      } else {
+         break;
       }
    }
-   virtual void VisitForStmt(ForStmt* forStmt) {
-      Visit(forStmt->getInit());
-      while(true) {
-         Expr* cond = forStmt->getCond();
-         Visit(cond);
-         if (mEnv->getCond(cond)) {
-            Visit(forStmt->getBody());
-         } else {
-            break;
-         }
-         Visit(forStmt->getInc());
-      }
-   }
-   virtual void VisitWhileStmt(WhileStmt* whileStmt) {
-      while(true) {
-         Expr* cond = whileStmt->getCond();
-         Visit(cond);
-         if (mEnv->getCond(cond)) {
-            Visit(whileStmt->getBody());
-         } else {
-            break;
-         }
-      }
-   }
-   // virtual void VisitArraySubscriptExpr(ArraySubscriptExpr* arraySubscriptExpr) {
-   //    VisitStmt(arraySubscriptExpr);
-   //    mEnv->arraySubscriptExpr(arraySubscriptExpr);
-   // }
-private:
-   Environment * mEnv;
-};
+}
+// virtual void VisitArraySubscriptExpr(ArraySubscriptExpr* arraySubscriptExpr) {
+//    VisitStmt(arraySubscriptExpr);
+//    mEnv->arraySubscriptExpr(arraySubscriptExpr);
+// }
 
 class InterpreterConsumer : public ASTConsumer {
 public:
@@ -96,7 +88,7 @@ public:
 
    virtual void HandleTranslationUnit(clang::ASTContext &Context) {
 	   TranslationUnitDecl * decl = Context.getTranslationUnitDecl();
-	   mEnv.init(decl);
+	   mEnv.init(decl, &mVisitor);
 
 	   FunctionDecl * entry = mEnv.getEntry();
 	   mVisitor.VisitStmt(entry->getBody());

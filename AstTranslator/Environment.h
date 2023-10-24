@@ -1,6 +1,10 @@
 //==--- tools/clang-check/ClangInterpreter.cpp - Clang Interpreter tool --------------===//
 //===----------------------------------------------------------------------===//
+#ifndef __ENVIRONMENT_H
+#define __ENVIRONMENT_H
+#include "ASTInterpreter.h"
 #include <cassert>
+#include <map>
 #include <stdio.h>
 #include <vector>
 
@@ -36,9 +40,12 @@ public:
    void bindDecl(Decl* decl, int val) {
       mVars[decl] = val;
    }    
-   int getDeclVal(Decl * decl) {
-      assert (mVars.find(decl) != mVars.end());
-      return mVars.find(decl)->second;
+   bool getDeclVal(Decl * decl, int& val) {
+      if (mVars.find(decl) == mVars.end()) {
+		return false;
+	  }
+      val = mVars.find(decl)->second;
+	  return true;
    }
    void bindStmt(Stmt * stmt, int val) {
 	   mExprs[stmt] = val;
@@ -71,6 +78,20 @@ public:
    int get(int addr);
 };
 */
+class GlobalRegion {
+	std::map<Decl*, int> globals;
+public:
+	void bindDecl(Decl* decl, int val) {
+		globals[decl] = val;
+	}
+	bool getDecl(Decl* decl, int& val) {
+		if (globals.find(decl) == globals.end()) {
+			return false;
+		}
+		val = globals[decl];
+		return true;
+	}
+};
 
 class Environment {
    std::vector<StackFrame> mStack;
@@ -83,14 +104,22 @@ class Environment {
    FunctionDecl * mEntry;
 
    const ASTContext& mContext;
+
+   GlobalRegion globalRegion;
+
+   InterpreterVisitor* visitor;
 public:
    /// Get the declartions to the built-in functions
    Environment(const ASTContext& Context) : mContext(Context), mStack(), mFree(NULL), mMalloc(NULL), mInput(NULL), mOutput(NULL), mEntry(NULL) {
    }
 
-
+   bool getDecl(Decl* decl,int& val) {
+	 return mStack.back().getDeclVal(decl, val) || globalRegion.getDecl(decl, val);
+   }
    /// Initialize the Environment
-   void init(TranslationUnitDecl * unit) {
+   void init(TranslationUnitDecl * unit, InterpreterVisitor* _visitor) {
+		visitor = _visitor;
+	   mStack.push_back(StackFrame());
 	   for (TranslationUnitDecl::decl_iterator i =unit->decls_begin(), e = unit->decls_end(); i != e; ++ i) {
 		   if (FunctionDecl * fdecl = dyn_cast<FunctionDecl>(*i) ) {
 			   if (fdecl->getName().equals("FREE")) mFree = fdecl;
@@ -98,8 +127,16 @@ public:
 			   else if (fdecl->getName().equals("GET")) mInput = fdecl;
 			   else if (fdecl->getName().equals("PRINT")) mOutput = fdecl;
 			   else if (fdecl->getName().equals("main")) mEntry = fdecl;
+		   } else if (VarDecl* vdecl = dyn_cast<VarDecl>(*i)) {
+			   int init = 0;
+			   if (vdecl->hasInit()) {
+				   visitor->Visit(vdecl->getInit());
+				   init = mStack.back().getStmtVal(vdecl->getInit(), mContext);
+			   }
+			   globalRegion.bindDecl(vdecl, init);
 		   }
 	   }
+	   mStack.pop_back();
 	   mStack.push_back(StackFrame());
    }
 
@@ -165,7 +202,11 @@ public:
 			//    } else {
 			//    		mStack.back().bindDecl(vardecl, 0);
 			//    }
-			   mStack.back().bindDecl(vardecl, 0);
+			   int init = 0;
+			   if (vardecl->hasInit()) {
+				 init = mStack.back().getStmtVal(vardecl->getInit(), mContext);
+			   }
+			   mStack.back().bindDecl(vardecl, init);
 		   }
 		   
 	   }
@@ -175,8 +216,10 @@ public:
 	   mStack.back().setPC(declref);
 	   if (declref->getType()->isIntegerType()) {
 		   Decl* decl = declref->getFoundDecl();
-
-		   int val = mStack.back().getDeclVal(decl);
+		   int val;
+		   if (!getDecl(decl, val)) {
+			assert("GetDecl Failed!\n");
+		   }
 		   mStack.back().bindStmt(declref, val);
 	   }
    }
@@ -230,3 +273,4 @@ public:
 };
 
 
+#endif
