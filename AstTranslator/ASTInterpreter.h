@@ -34,6 +34,8 @@ public:
   virtual void VisitForStmt(ForStmt *forStmt);
   virtual void VisitWhileStmt(WhileStmt *whileStmt);
   virtual void VisitReturnStmt(ReturnStmt* returnStmt);
+  virtual void VisitUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr* unaryExprOrTypeTraitExpr);
+  virtual void VisitParenExpr(ParenExpr* parenExpr);
 private:
   Environment *mEnv;
 };

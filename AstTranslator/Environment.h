@@ -5,7 +5,9 @@
 #include "ASTInterpreter.h"
 #include <cassert>
 #include <map>
+#include <set>
 #include <stdio.h>
+#include <tuple>
 #include <vector>
 
 #include "clang/AST/ASTConsumer.h"
@@ -86,15 +88,81 @@ public:
 };
 
 /// Heap maps address to a value
-/*
 class Heap {
+private:
+	class HeapItem {
+	public:
+		void* start;
+		int size;
+		HeapItem(){}
+		HeapItem(void* _start, int _size):start(_start), size(_size){}
+	};
+	class CountAllocator {
+	private:
+		int maxCount;
+	public:
+		CountAllocator(int startCount = 0):maxCount(startCount){}
+		int allocateCount(int i) {
+			int addr = maxCount;
+			maxCount += i;
+			return addr;
+		}
+		void freeCount(int i) {
+			//Trivial
+		}
+	};
+private:
+	std::map<int, HeapItem> items;
+	CountAllocator counter;
 public:
-   int Malloc(int size) ;
-   void Free (int addr) ;
-   void Update(int addr, int val) ;
-   int get(int addr);
+   int Malloc(int size) {
+		void* start = static_cast<void*>(new char[size]);
+		HeapItem heapItem(start, size);
+		int idx = counter.allocateCount(size);
+		items[idx] = heapItem;
+		// llvm::errs() << "Malloc(" << idx << "), size: " << heapItem.size << "\n"; 
+		return idx;
+   }
+   void Free(int itemIdx) {
+		auto getRes = get(itemIdx);
+	    HeapItem heapItem = std::get<0>(getRes);
+		int idx = std::get<1>(getRes);
+		assert(idx == 0);
+		delete [] static_cast<char*>(heapItem.start);
+		counter.freeCount(itemIdx);
+   }
+   void Update(int itemIdx, int val) {
+	    auto getRes = get(itemIdx);
+	    HeapItem heapItem = std::get<0>(getRes);
+		int idx = std::get<1>(getRes);
+		// llvm::errs() << "Update: " << idx << " " << heapItem.size << "\n";
+		assert(idx * sizeof(int) < heapItem.size);
+		*(static_cast<int*>(heapItem.start) + idx) = val;
+   }
+   int Get(int itemIdx) {
+		auto getRes = get(itemIdx);
+	    HeapItem heapItem = std::get<0>(getRes);
+		int idx = std::get<1>(getRes);
+		// llvm::errs() << "Get: " << idx << " " << heapItem.size << "\n";
+		assert(idx * sizeof(int) < heapItem.size);
+		return *(static_cast<int*>(heapItem.start) + idx);
+   }
+private:
+   std::tuple<HeapItem, int> get(int itemIdx) {
+		// for (auto p: items) {
+		// 	llvm::errs() << p.first << " ";
+		// }
+		// llvm::errs() << "\n";
+		auto it = items.upper_bound(itemIdx);
+		if (it == items.begin()) {
+			assert("Heap Address Not Found\n");
+		}
+		it--;
+		// llvm::errs() << "itemIdx: " << itemIdx << ", it.idx: " << it->first << "\n";
+        return std::make_tuple(it->second, itemIdx - it->first);
+   }
 };
-*/
+
 class GlobalRegion {
 	std::map<Decl*, int> globals;
 public:
@@ -124,7 +192,12 @@ class Environment {
 
    GlobalRegion globalRegion;
 
+   Heap heap;
+
    InterpreterVisitor* visitor;
+
+   //Temp variables, not useful for others
+   int tempHeapAddr;
 public:
    /// Get the declartions to the built-in functions
    Environment(const ASTContext& Context) : mContext(Context), mStack(), mFree(NULL), mMalloc(NULL), mInput(NULL), mOutput(NULL), mEntry(NULL) {
@@ -172,6 +245,8 @@ public:
 		   if (DeclRefExpr * declexpr = dyn_cast<DeclRefExpr>(left)) {
 			   Decl * decl = declexpr->getFoundDecl();
 			   mStack.back().bindDecl(decl, val);
+		   } else {
+			   heap.Update(tempHeapAddr, val);
 		   }
 		   return;
 	    }
@@ -231,7 +306,9 @@ public:
    
    void declref(DeclRefExpr * declref) {
 	   mStack.back().setPC(declref);
-	   if (declref->getType()->isIntegerType()) {
+	   if (declref->getType()->isIntegerType() ||
+            declref->getType()->isPointerType() && !declref->getType()->isFunctionPointerType() ||
+            declref->getType()->isArrayType()) {
 		   Decl* decl = declref->getFoundDecl();
 		   int val;
 		   if (!getDecl(decl, val)) {
@@ -243,7 +320,9 @@ public:
 
    void cast(CastExpr * castexpr) {
 	   mStack.back().setPC(castexpr);
-	   if (castexpr->getType()->isIntegerType()) {
+	   if (castexpr->getType()->isIntegerType() ||
+            castexpr->getType()->isPointerType() && !castexpr->getType()->isFunctionPointerType() ||
+            castexpr->getType()->isArrayType()) {
 		   Expr * expr = castexpr->getSubExpr();
 		   int val = mStack.back().getStmtVal(expr, mContext);
 		   mStack.back().bindStmt(castexpr, val );
@@ -264,6 +343,16 @@ public:
 		   Expr * decl = callexpr->getArg(0);
 		   val = mStack.back().getStmtVal(decl, mContext);
 		   llvm::errs() << val;
+	   } else if (callee == mMalloc) {
+		   Expr * expr = callexpr->getArg(0);
+		   val = mStack.back().getStmtVal(expr, mContext);
+		   int addr = heap.Malloc(val);
+		   mStack.back().bindStmt(callexpr, addr);
+	   } else if (callee == mFree) {
+		   Expr* expr = callexpr->getArg(0);
+		   int addr = mStack.back().getStmtVal(expr, mContext);
+		   heap.Free(addr);
+		   mStack.back().bindStmt(callexpr, addr);
 	   } else {
 		   /// You could add your code here for Function call Return
 		   StackFrame newFrame;
@@ -288,15 +377,39 @@ public:
    void unary(UnaryOperator* unaryOperator) {
 	   mStack.back().setPC(unaryOperator);
 	   Expr* subExpr = unaryOperator->getSubExpr();
-	   return mStack.back().bindStmt(unaryOperator, 
-	         -mStack.back().getStmtVal(subExpr,  mContext));
+	   int val;
+	   switch (unaryOperator->getOpcode()) {
+			default:
+				llvm::errs() << "Unsupported Unary Opcode!\n";
+				break;
+			case clang::UO_Deref:
+				tempHeapAddr = mStack.back().getStmtVal(subExpr, mContext);
+				val = heap.Get(tempHeapAddr);
+				break;
+			case clang::UO_Minus:
+				val = -mStack.back().getStmtVal(subExpr, mContext);
+				break;
+	   }
+	   mStack.back().bindStmt(unaryOperator, val);
+	   return;
    }
 
    bool getCond(Stmt* cond) {
 	  mStack.back().setPC(cond);
 	  return mStack.back().getStmtVal(cond, mContext) != 0;
    }
+   
+   void unaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *unaryExprOrTypeTraitExpr) {
+	  mStack.back().setPC(unaryExprOrTypeTraitExpr);
+	//   llvm::errs() << unaryExprOrTypeTraitExpr->get << "\n";
+	  mStack.back().bindStmt(unaryExprOrTypeTraitExpr, sizeof(int));
+   }
 
+   void parenExpr(ParenExpr *parenExpr) {
+        Expr *subExpr = parenExpr->getSubExpr();
+        int val = mStack.back().getStmtVal(subExpr, mContext);
+        mStack.back().bindStmt(parenExpr, val);
+    }
 //    void arraySubscriptExpr(ArraySubscriptExpr* arraySubscriptExpr) {
 // 	  mStack.back().setPC(arraySubscriptExpr);
 // 	  int idx = mStack.back().getStmtVal(arraySubscriptExpr->getIdx(), mContext);

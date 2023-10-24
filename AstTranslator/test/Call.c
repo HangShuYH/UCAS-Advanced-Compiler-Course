@@ -9,6 +9,9 @@ int func() {
     return a;
 }
 
+void func2() {
+    PRINT(-100);
+}
 int main() {
    int a;
    a = func();

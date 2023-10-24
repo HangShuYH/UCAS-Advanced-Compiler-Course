@@ -78,6 +78,15 @@ void InterpreterVisitor::VisitReturnStmt(ReturnStmt* returnStmt) {
    VisitStmt(returnStmt);
    mEnv->ret(returnStmt);
 }
+void InterpreterVisitor::VisitUnaryExprOrTypeTraitExpr(
+   UnaryExprOrTypeTraitExpr *unaryExprOrTypeTraitExpr) {
+   VisitStmt(unaryExprOrTypeTraitExpr);
+   mEnv->unaryExprOrTypeTraitExpr(unaryExprOrTypeTraitExpr);
+}
+void InterpreterVisitor::VisitParenExpr(ParenExpr *parenExpr) {
+   VisitStmt(parenExpr);
+   mEnv->parenExpr(parenExpr);
+}
 // virtual void VisitArraySubscriptExpr(ArraySubscriptExpr* arraySubscriptExpr) {
 //    VisitStmt(arraySubscriptExpr);
 //    mEnv->arraySubscriptExpr(arraySubscriptExpr);

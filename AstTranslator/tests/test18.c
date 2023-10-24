@@ -20,3 +20,4 @@ int main() {
    FREE(a);
    FREE((int *)b);
 }
+//1020
