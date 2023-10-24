@@ -33,6 +33,7 @@ public:
   virtual void VisitIfStmt(IfStmt *ifstmt);
   virtual void VisitForStmt(ForStmt *forStmt);
   virtual void VisitWhileStmt(WhileStmt *whileStmt);
+  virtual void VisitReturnStmt(ReturnStmt* returnStmt);
 private:
   Environment *mEnv;
 };

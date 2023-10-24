@@ -14,3 +14,5 @@ int main() {
    else b = 20;
    PRINT(b);
 }
+
+//20

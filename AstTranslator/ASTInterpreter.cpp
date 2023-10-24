@@ -74,6 +74,10 @@ void InterpreterVisitor::VisitWhileStmt(WhileStmt *whileStmt) {
       }
    }
 }
+void InterpreterVisitor::VisitReturnStmt(ReturnStmt* returnStmt) {
+   VisitStmt(returnStmt);
+   mEnv->ret(returnStmt);
+}
 // virtual void VisitArraySubscriptExpr(ArraySubscriptExpr* arraySubscriptExpr) {
 //    VisitStmt(arraySubscriptExpr);
 //    mEnv->arraySubscriptExpr(arraySubscriptExpr);

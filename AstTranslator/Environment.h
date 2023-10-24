@@ -33,10 +33,27 @@ class StackFrame {
    std::map<Stmt*, int> mExprs;
    /// The current stmt
    Stmt * mPC;
+
+   // for call
+   std::vector<int> params;
+   int retVal;
 public:
    StackFrame() : mVars(), mExprs(), mPC() {
    }
    
+   void pushParam(int val) {
+	params.push_back(val);
+   }
+   std::vector<int> getParams() {
+	return params;
+   }
+   void setRetVal(int val) {
+	retVal = val;
+   }
+   int getRetVal() {
+	return retVal;
+   }
+
    void bindDecl(Decl* decl, int val) {
       mVars[decl] = val;
    }    
@@ -249,10 +266,25 @@ public:
 		   llvm::errs() << val;
 	   } else {
 		   /// You could add your code here for Function call Return
+		   StackFrame newFrame;
+		   for (int i = 0;i < callexpr->getNumArgs(); i++) {
+			    int val = mStack.back().getStmtVal(
+					callexpr->getArg(i), mContext);
+				newFrame.bindDecl(callee->getParamDecl(i), val);
+           }
+		   mStack.push_back(newFrame);
+		   visitor->VisitStmt(callee->getBody());
+		   int retVal = mStack.back().getRetVal();
+		   mStack.pop_back();
+		   mStack.back().bindStmt(callexpr, retVal);
 		   
 	   }
    }
-
+   void ret(ReturnStmt* returnStmt) {
+	   Expr* expr = returnStmt->getRetValue();
+	   int retVal = mStack.back().getStmtVal(expr, mContext);
+	   mStack.back().setRetVal(retVal);
+   }
    void unary(UnaryOperator* unaryOperator) {
 	   mStack.back().setPC(unaryOperator);
 	   Expr* subExpr = unaryOperator->getSubExpr();
