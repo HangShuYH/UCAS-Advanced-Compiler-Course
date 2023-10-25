@@ -5,7 +5,7 @@ extern void PRINT(int);
 
 int func() {
     int a;
-    a = GET();
+    a = 30;
     return a;
 }
 

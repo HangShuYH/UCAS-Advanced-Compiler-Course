@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.1.0)
 project(assign1)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(LLVM_DIR /usr/local/llvm-10)
+# set(LLVM_DIR /usr/local/llvm-10)
 set(CMAKE_C_FLAGS "-fno-rtti")
 set(CMAKE_CXX_FLAGS "-fno-rtti")
 set(CMAKE_BUILD_TYPE debug)

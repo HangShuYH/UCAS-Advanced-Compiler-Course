@@ -51,16 +51,20 @@ void InterpreterVisitor::VisitIfStmt(IfStmt *ifstmt) {
    }
 }
 void InterpreterVisitor::VisitForStmt(ForStmt *forStmt) {
-   Visit(forStmt->getInit());
+   if (forStmt->getInit())
+      Visit(forStmt->getInit());
    while(true) {
       Expr* cond = forStmt->getCond();
-      Visit(cond);
-      if (mEnv->getCond(cond)) {
-         Visit(forStmt->getBody());
-      } else {
-         break;
+      if (cond) {
+         Visit(cond);
+         if (mEnv->getCond(cond)) {
+            Visit(forStmt->getBody());
+         } else {
+            break;
+         }
       }
-      Visit(forStmt->getInc());
+      if (forStmt->getInc())
+         Visit(forStmt->getInc());
    }
 }
 void InterpreterVisitor::VisitWhileStmt(WhileStmt *whileStmt) {
@@ -87,10 +91,10 @@ void InterpreterVisitor::VisitParenExpr(ParenExpr *parenExpr) {
    VisitStmt(parenExpr);
    mEnv->parenExpr(parenExpr);
 }
-// virtual void VisitArraySubscriptExpr(ArraySubscriptExpr* arraySubscriptExpr) {
-//    VisitStmt(arraySubscriptExpr);
-//    mEnv->arraySubscriptExpr(arraySubscriptExpr);
-// }
+void InterpreterVisitor::VisitArraySubscriptExpr(ArraySubscriptExpr* arraySubscriptExpr) {
+   VisitStmt(arraySubscriptExpr);
+   mEnv->arraySubscriptExpr(arraySubscriptExpr);
+}
 
 class InterpreterConsumer : public ASTConsumer {
 public:

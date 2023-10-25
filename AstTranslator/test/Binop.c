@@ -5,9 +5,9 @@ extern void PRINT(int);
 
 int main() {
    int a;
-   a = GET();
+   a = 5;
    int b;
-   b = GET();
+   b = 10;
    PRINT(a + b);
    PRINT(a - b);
    PRINT(a * b);

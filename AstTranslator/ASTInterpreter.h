@@ -36,6 +36,7 @@ public:
   virtual void VisitReturnStmt(ReturnStmt* returnStmt);
   virtual void VisitUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr* unaryExprOrTypeTraitExpr);
   virtual void VisitParenExpr(ParenExpr* parenExpr);
+  virtual void VisitArraySubscriptExpr(ArraySubscriptExpr* arraySubscriptExpr);
 private:
   Environment *mEnv;
 };

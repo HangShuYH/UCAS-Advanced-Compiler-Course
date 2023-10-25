@@ -5,6 +5,6 @@ extern void PRINT(int);
 
 int main() {
    int a;
-   a = GET();
+   a = 60;
    PRINT(-a);
 }

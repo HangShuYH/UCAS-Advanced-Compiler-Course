@@ -5,7 +5,7 @@ extern void PRINT(int);
 
 int main() {
    int a;
-   a = GET();
+   a = 50;
    for (int i = 0;i < a; i = i + 1) {
     PRINT(i);
    }

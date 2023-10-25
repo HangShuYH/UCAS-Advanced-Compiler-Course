@@ -37,17 +37,10 @@ class StackFrame {
    Stmt * mPC;
 
    // for call
-   std::vector<int> params;
    int retVal;
+
 public:
    StackFrame() : mVars(), mExprs(), mPC() {
-   }
-   
-   void pushParam(int val) {
-	params.push_back(val);
-   }
-   std::vector<int> getParams() {
-	return params;
    }
    void setRetVal(int val) {
 	retVal = val;
@@ -120,7 +113,6 @@ public:
 		HeapItem heapItem(start, size);
 		int idx = counter.allocateCount(size);
 		items[idx] = heapItem;
-		// llvm::errs() << "Malloc(" << idx << "), size: " << heapItem.size << "\n"; 
 		return idx;
    }
    void Free(int itemIdx) {
@@ -135,7 +127,6 @@ public:
 	    auto getRes = get(itemIdx);
 	    HeapItem heapItem = std::get<0>(getRes);
 		int idx = std::get<1>(getRes);
-		// llvm::errs() << "Update: " << idx << " " << heapItem.size << "\n";
 		assert(idx * sizeof(int) < heapItem.size);
 		*(static_cast<int*>(heapItem.start) + idx) = val;
    }
@@ -143,22 +134,16 @@ public:
 		auto getRes = get(itemIdx);
 	    HeapItem heapItem = std::get<0>(getRes);
 		int idx = std::get<1>(getRes);
-		// llvm::errs() << "Get: " << idx << " " << heapItem.size << "\n";
 		assert(idx * sizeof(int) < heapItem.size);
 		return *(static_cast<int*>(heapItem.start) + idx);
    }
 private:
    std::tuple<HeapItem, int> get(int itemIdx) {
-		// for (auto p: items) {
-		// 	llvm::errs() << p.first << " ";
-		// }
-		// llvm::errs() << "\n";
 		auto it = items.upper_bound(itemIdx);
 		if (it == items.begin()) {
 			assert("Heap Address Not Found\n");
 		}
 		it--;
-		// llvm::errs() << "itemIdx: " << itemIdx << ", it.idx: " << it->first << "\n";
         return std::make_tuple(it->second, itemIdx - it->first);
    }
 };
@@ -287,18 +272,16 @@ public:
 			   it != ie; ++ it) {
 		   Decl * decl = *it;
 		   if (VarDecl * vardecl = dyn_cast<VarDecl>(decl)) {
-			//    if (auto constantArrayType = dyn_cast<ConstantArrayType>(vardecl->getType().getTypePtr())) {
-			// 		for (int i = 0;i < constantArrayType->getSize().getSExtValue(); i++) {
-			// 			mStack.back().bindDecl(vardecl, 0);
-			// 		}
-			//    } else {
-			//    		mStack.back().bindDecl(vardecl, 0);
-			//    }
-			   int init = 0;
-			   if (vardecl->hasInit()) {
-				 init = mStack.back().getStmtVal(vardecl->getInit(), mContext);
+			   if (auto constantArrayType = dyn_cast<ConstantArrayType>(vardecl->getType().getTypePtr())) {
+					int heapAddr = heap.Malloc(constantArrayType->getSize().getSExtValue() * sizeof(int));
+					mStack.back().bindDecl(vardecl, heapAddr);
+			   } else {
+					int init = 0;
+					if (vardecl->hasInit()) {
+						init = mStack.back().getStmtVal(vardecl->getInit(), mContext);
+					}
+					mStack.back().bindDecl(vardecl, init);
 			   }
-			   mStack.back().bindDecl(vardecl, init);
 		   }
 		   
 	   }
@@ -335,7 +318,7 @@ public:
 	   int val = 0;
 	   FunctionDecl * callee = callexpr->getDirectCallee();
 	   if (callee == mInput) {
-		  llvm::errs() << "Please Input an Integer Value : ";
+		//   llvm::errs() << "Please Input an Integer Value : ";
 		  scanf("%d", &val);
 
 		  mStack.back().bindStmt(callexpr, val);
@@ -401,7 +384,6 @@ public:
    
    void unaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *unaryExprOrTypeTraitExpr) {
 	  mStack.back().setPC(unaryExprOrTypeTraitExpr);
-	//   llvm::errs() << unaryExprOrTypeTraitExpr->get << "\n";
 	  mStack.back().bindStmt(unaryExprOrTypeTraitExpr, sizeof(int));
    }
 
@@ -410,11 +392,14 @@ public:
         int val = mStack.back().getStmtVal(subExpr, mContext);
         mStack.back().bindStmt(parenExpr, val);
     }
-//    void arraySubscriptExpr(ArraySubscriptExpr* arraySubscriptExpr) {
-// 	  mStack.back().setPC(arraySubscriptExpr);
-// 	  int idx = mStack.back().getStmtVal(arraySubscriptExpr->getIdx(), mContext);
-	  
-//    }
+   void arraySubscriptExpr(ArraySubscriptExpr* arraySubscriptExpr) {
+	  mStack.back().setPC(arraySubscriptExpr);
+	  int idx = mStack.back().getStmtVal(arraySubscriptExpr->getIdx(), mContext);
+	  int base = mStack.back().getStmtVal(arraySubscriptExpr->getBase(), mContext);
+	  tempHeapAddr = base + idx;
+	  int val = heap.Get(tempHeapAddr);
+	  mStack.back().bindStmt(arraySubscriptExpr, val);
+   }
 };
 
 
