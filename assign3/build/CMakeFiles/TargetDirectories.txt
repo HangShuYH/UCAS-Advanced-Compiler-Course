@@ -1,0 +1,4 @@
+/home/sh/UCAS-Advanced-Compiler-Course/assign3/build/CMakeFiles/edit_cache.dir
+/home/sh/UCAS-Advanced-Compiler-Course/assign3/build/CMakeFiles/rebuild_cache.dir
+/home/sh/UCAS-Advanced-Compiler-Course/assign3/build/CMakeFiles/assignment3.dir
+/home/sh/UCAS-Advanced-Compiler-Course/assign3/build/CMakeFiles/intrinsics_gen.dir

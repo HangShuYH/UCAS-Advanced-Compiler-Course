@@ -1,0 +1,7 @@
+[
+{
+  "directory": "/home/sh/UCAS-Advanced-Compiler-Course/assign3/build",
+  "command": "/usr/bin/c++   -I/usr/local/llvm-10.0.1/include  -fno-rtti -g   -o CMakeFiles/assignment3.dir/LLVMAssignment.cpp.o -c /home/sh/UCAS-Advanced-Compiler-Course/assign3/LLVMAssignment.cpp",
+  "file": "/home/sh/UCAS-Advanced-Compiler-Course/assign3/LLVMAssignment.cpp"
+}
+]
