@@ -84,6 +84,37 @@ template <class T>
 void compForwardDataflow(Function *fn, DataflowVisitor<T> *visitor,
                          typename DataflowResult<T>::Type *result,
                          const T &initval) {
+  std::set<BasicBlock *> worklist;
+  // Initialize the worklist with all exit blocks
+  for (Function::iterator bi = fn->begin(); bi != fn->end(); ++bi) {
+    BasicBlock *bb = &*bi;
+    result->insert(std::make_pair(bb, std::make_pair(initval, initval)));
+    worklist.insert(bb);
+  }
+  // Iteratively compute the dataflow result
+  while (!worklist.empty()) {
+    BasicBlock *bb = *worklist.begin();
+    worklist.erase(worklist.begin());
+
+    // Merge all incoming value
+    T bbentryval = (*result)[bb].first;
+    for (auto pi = pred_begin(bb), pe = pred_end(bb); pi != pe; pi++) {
+      BasicBlock *succ = *pi;
+      visitor->merge(&bbentryval, (*result)[succ].second);
+    }
+
+    (*result)[bb].first = bbentryval;
+    visitor->compDFVal(bb, &bbentryval, true);
+
+    // If outgoing value changed, propagate it along the CFG
+    if (bbentryval == (*result)[bb].second)
+      continue;
+    (*result)[bb].second = bbentryval;
+
+    for (auto si = succ_begin(bb), se = succ_end(bb); si != se; si++) {
+      worklist.insert(*si);
+    }
+  }
   return;
 }
 ///

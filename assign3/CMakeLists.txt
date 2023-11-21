@@ -7,6 +7,11 @@ set(CMAKE_C_FLAGS "-fno-rtti")
 set(CMAKE_CXX_FLAGS "-fno-rtti")
 set(CMAKE_BUILD_TYPE debug)
 message(STATUS "LLVM_DIR: ${LLVM_DIR}")
+option(ENABLE_DEBUG_INFO "Enable Debug Info" OFF)
+if(ENABLE_DEBUG_INFO)
+  add_definitions(-DDEBUG_INFO)
+endif()
+
 
 find_package(LLVM REQUIRED CONFIG HINTS ${LLVM_DIR} ${LLVM_DIR}/lib/cmake/llvm
 	                NO_DEFAULT_PATH)
