@@ -47,13 +47,34 @@ static std::map<Function *, DataflowResult<PointerAnalysisInfo>::Type>
 static std::set<Function *> todoFunctions;
 static std::map<Value *, BasicBlock *> structMapping;
 static std::map<Value *, Value *> fieldMapping;
+static std::map<Function *, std::set<Function *>> returnFunctions;
+static std::map<Value *, std::set<Function *>> res;
+static std::set<Function *> allFuntions;
+static std::map<BasicBlock *, std::map<Value *, std::set<Function *>>>
+    bbMapping;
 static void
 addFunction(DataflowResult<PointerAnalysisInfo>::Type &dataflowResult,
-            Value *value, Function *function) {
+            Value *value, std::set<Function *> functions, BasicBlock *bb) {
   if (fieldMapping.find(value) != fieldMapping.end()) {
-    dataflowResult[structMapping[value]]
-        .second.ptrInfos[fieldMapping[value]]
-        .insert(function);
+    auto vv = bbMapping[bb];
+    auto ff = vv[structMapping[value]];
+    for (auto func : ff) {
+      dataflowResult[structMapping[value]]
+          .second.ptrInfos[fieldMapping[value]]
+          .erase(func);
+#ifdef DEBUG_INFO
+      errs() << "Delete: " << func->getName() << "\n";
+#endif
+    }
+    // dataflowResult[structMapping[value]]
+    //     .second.ptrInfos[fieldMapping[value]]
+    //     .clear();
+    for (auto function : functions) {
+      dataflowResult[structMapping[value]]
+          .second.ptrInfos[fieldMapping[value]]
+          .insert(function);
+      bbMapping[bb][structMapping[value]].insert(function);
+    }
   }
 }
 static std::set<Function *>
@@ -97,13 +118,18 @@ public:
     }
     if (auto allocaInst = dyn_cast<AllocaInst>(inst)) {
       auto allocaType = allocaInst->getAllocatedType();
-      if (allocaType->isStructTy() || allocaType->isArrayTy()) {
+      if (allocaType->isStructTy() || allocaType->isArrayTy() ||
+          allocaType->isPointerTy()) {
+        dumpInst(allocaInst);
         structMapping[allocaInst->getOperand(0)] = allocaInst->getParent();
       }
     }
     if (auto loadInst = dyn_cast<LoadInst>(inst)) {
       dumpInst(inst);
       auto src = loadInst->getOperand(0);
+      if (src->getType()->isPointerTy()) {
+        fieldMapping[inst] = src;
+      }
       if (dfval->ptrInfos.find(src) != dfval->ptrInfos.end()) {
         dfval->ptrInfos[inst] = dfval->ptrInfos[src];
       }
@@ -125,9 +151,8 @@ public:
       if (!functionSet.empty()) {
         dfval->ptrInfos[dst] = functionSet;
       }
-      for (auto function : functionSet) {
-        addFunction(funcPtrResults[inst->getFunction()], dst, function);
-      }
+      addFunction(funcPtrResults[inst->getFunction()], dst, functionSet,
+                  inst->getParent());
     }
     if (auto callInst = dyn_cast<CallInst>(inst)) {
       dumpInst(inst);
@@ -139,7 +164,15 @@ public:
         functionSet = dfval->ptrInfos[src];
       }
       if (!functionSet.empty()) {
-        dfval->ptrInfos[inst] = functionSet;
+        dfval->ptrInfos[src] = functionSet;
+        res[inst] = functionSet;
+      }
+      // update return values
+      dfval->ptrInfos[inst].clear();
+      for (auto function : functionSet) {
+        for (auto addfunc : returnFunctions[function]) {
+          dfval->ptrInfos[inst].insert(addfunc);
+        }
       }
       // update args
       for (int i = 0; i < callInst->getNumArgOperands(); i++) {
@@ -148,7 +181,7 @@ public:
             arg->getType()->getPointerElementType()->isFunctionTy() &&
             dfval->ptrInfos.find(arg) != dfval->ptrInfos.end()) {
           auto functions = dfval->ptrInfos[arg];
-          for (auto function : dfval->ptrInfos[inst]) {
+          for (auto function : dfval->ptrInfos[src]) {
             auto dataflowResult = &funcPtrResults[function];
             auto bb_begin_info = &(*dataflowResult)[&*function->begin()].first;
             auto ori_info = *bb_begin_info;
@@ -170,10 +203,26 @@ public:
       }
     }
     if (auto gepInst = dyn_cast<GetElementPtrInst>(inst)) {
-      Value *value = gepInst->getOperand(2);
-      fieldMapping[gepInst] = gepInst->getOperand(2);
+      dumpInst(gepInst);
+      // Value *value = gepInst->getOperand(1);
+      fieldMapping[gepInst] = gepInst->getOperand(1);
     }
     if (auto returnInst = dyn_cast<ReturnInst>(inst)) {
+      auto returnType = inst->getFunction()->getReturnType();
+      if (returnType->isPointerTy() &&
+          returnType->getPointerElementType()->isFunctionTy()) {
+        dumpInst(returnInst);
+        auto oriFunctions = returnFunctions[inst->getFunction()];
+        returnFunctions[inst->getFunction()] =
+            dfval->ptrInfos[returnInst->getReturnValue()];
+#ifdef DEBUG_INFO
+        errs() << "Return Function: "
+               << returnFunctions[inst->getFunction()].size() << "\n";
+#endif
+        if (oriFunctions != returnFunctions[inst->getFunction()]) {
+          todoFunctions = allFuntions;
+        }
+      }
     }
   }
 };
@@ -190,6 +239,7 @@ public:
     for (auto &function : M) {
       funcWorkList.insert(&function);
       funcPtrResults[&function] = DataflowResult<PointerAnalysisInfo>::Type();
+      allFuntions.insert(&function);
     }
     PointerAnalysisVisitor visitor;
     while (!funcWorkList.empty()) {
@@ -211,18 +261,17 @@ public:
       }
     }
 
-    std::map<Value *, std::set<Function *>> res;
-    for (auto funcPtrRes : funcPtrResults) {
-      for (auto bbResult : funcPtrRes.second) {
-        auto ptrInfos = bbResult.second.second.ptrInfos;
-        for (auto ptrInfo : ptrInfos) {
-          auto inst = ptrInfo.first;
-          for (auto function : ptrInfo.second) {
-            res[inst].insert(function);
-          }
-        }
-      }
-    }
+    // for (auto funcPtrRes : funcPtrResults) {
+    //   for (auto bbResult : funcPtrRes.second) {
+    //     auto ptrInfos = bbResult.second.second.ptrInfos;
+    //     for (auto ptrInfo : ptrInfos) {
+    //       auto inst = ptrInfo.first;
+    //       for (auto function : ptrInfo.second) {
+    //         res[inst].insert(function);
+    //       }
+    //     }
+    //   }
+    // }
     for (auto info : res) {
       if (auto callInst = dyn_cast<CallInst>(info.first)) {
         errs() << callInst->getDebugLoc().getLine() << " :";
