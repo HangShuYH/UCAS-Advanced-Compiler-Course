@@ -1,4 +1,5 @@
 #include "Dataflow.h"
+#include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instruction.h"
@@ -44,6 +45,26 @@ inline raw_ostream &operator<<(raw_ostream &out,
 static std::map<Function *, DataflowResult<PointerAnalysisInfo>::Type>
     funcPtrResults;
 static std::set<Function *> todoFunctions;
+static std::map<Value *, BasicBlock *> structMapping;
+static std::map<Value *, Value *> fieldMapping;
+static void
+addFunction(DataflowResult<PointerAnalysisInfo>::Type &dataflowResult,
+            Value *value, Function *function) {
+  if (fieldMapping.find(value) != fieldMapping.end()) {
+    dataflowResult[structMapping[value]]
+        .second.ptrInfos[fieldMapping[value]]
+        .insert(function);
+  }
+}
+static std::set<Function *>
+getFunction(DataflowResult<PointerAnalysisInfo>::Type &dataflowResult,
+            Value *value) {
+  if (fieldMapping.find(value) != fieldMapping.end()) {
+    return dataflowResult[structMapping[value]]
+        .second.ptrInfos[fieldMapping[value]];
+  }
+  return std::set<Function *>();
+}
 static void dumpInst(Instruction *inst) {
 #ifdef DEBUG_INFO
   inst->dump();
@@ -74,11 +95,21 @@ public:
     if (isa<MemIntrinsic>(inst)) {
       return;
     }
+    if (auto allocaInst = dyn_cast<AllocaInst>(inst)) {
+      auto allocaType = allocaInst->getAllocatedType();
+      if (allocaType->isStructTy() || allocaType->isArrayTy()) {
+        structMapping[allocaInst->getOperand(0)] = allocaInst->getParent();
+      }
+    }
     if (auto loadInst = dyn_cast<LoadInst>(inst)) {
       dumpInst(inst);
       auto src = loadInst->getOperand(0);
       if (dfval->ptrInfos.find(src) != dfval->ptrInfos.end()) {
         dfval->ptrInfos[inst] = dfval->ptrInfos[src];
+      }
+      auto funcs = getFunction(funcPtrResults[inst->getFunction()], src);
+      if (!funcs.empty()) {
+        dfval->ptrInfos[inst] = funcs;
       }
     }
     if (auto storeInst = dyn_cast<StoreInst>(inst)) {
@@ -93,6 +124,9 @@ public:
       }
       if (!functionSet.empty()) {
         dfval->ptrInfos[dst] = functionSet;
+      }
+      for (auto function : functionSet) {
+        addFunction(funcPtrResults[inst->getFunction()], dst, function);
       }
     }
     if (auto callInst = dyn_cast<CallInst>(inst)) {
@@ -135,6 +169,10 @@ public:
         }
       }
     }
+    if (auto gepInst = dyn_cast<GetElementPtrInst>(inst)) {
+      Value *value = gepInst->getOperand(2);
+      fieldMapping[gepInst] = gepInst->getOperand(2);
+    }
     if (auto returnInst = dyn_cast<ReturnInst>(inst)) {
     }
   }
@@ -146,6 +184,8 @@ public:
   PointerAnalysisPass() : ModulePass(ID) {}
   bool runOnModule(Module &M) override {
     todoFunctions.clear();
+    fieldMapping.clear();
+    structMapping.clear();
     std::set<Function *> funcWorkList;
     for (auto &function : M) {
       funcWorkList.insert(&function);
