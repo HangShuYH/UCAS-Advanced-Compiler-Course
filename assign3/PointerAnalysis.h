@@ -1,5 +1,7 @@
 #include "Dataflow.h"
 #include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/CFG.h"
+#include "llvm/IR/Constant.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instruction.h"
@@ -9,88 +11,73 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cassert>
 #include <map>
 #include <memory>
 #include <set>
 using namespace llvm;
+using ValueSet = std::set<Value *>;
+using FunctionSet = std::set<Function *>;
+template <class T> using ValueMap = std::map<Value *, T>;
+template <class T> using FunctionMap = std::map<Function *, T>;
 struct PointerAnalysisInfo {
-  std::map<Value *, std::set<Function *>> ptrInfos;
+  ValueMap<ValueSet> ptrInfos;
+  ValueMap<ValueSet> objInfos;
   PointerAnalysisInfo() : ptrInfos() {}
   PointerAnalysisInfo(const PointerAnalysisInfo &info)
-      : ptrInfos(info.ptrInfos) {}
+      : ptrInfos(info.ptrInfos), objInfos(info.objInfos) {}
   bool operator==(const PointerAnalysisInfo &info) const {
-    return ptrInfos == info.ptrInfos;
+    return ptrInfos == info.ptrInfos && objInfos == info.objInfos;
   }
 };
 
 inline raw_ostream &operator<<(raw_ostream &out,
                                const PointerAnalysisInfo &info) {
-  for (auto ii = info.ptrInfos.begin(), ie = info.ptrInfos.end(); ii != ie;
-       ++ii) {
-    out << ii->first->getName() << ": ";
-    bool first = true;
-    for (auto func : (*ii).second) {
-      if (first) {
-        first = false;
-      } else {
-        out << ", ";
-      }
-      out << func->getName();
-    }
-    out << "\n";
-  }
   return out;
-}
-static std::map<Function *, DataflowResult<PointerAnalysisInfo>::Type>
-    funcPtrResults;
-static std::set<Function *> todoFunctions;
-static std::map<Value *, BasicBlock *> structMapping;
-static std::map<Value *, Value *> fieldMapping;
-static std::map<Function *, std::set<Function *>> returnFunctions;
-static std::map<Value *, std::set<Function *>> res;
-static std::set<Function *> allFuntions;
-static std::map<BasicBlock *, std::map<Value *, std::set<Function *>>>
-    bbMapping;
-static void
-addFunction(DataflowResult<PointerAnalysisInfo>::Type &dataflowResult,
-            Value *value, std::set<Function *> functions, BasicBlock *bb) {
-  if (fieldMapping.find(value) != fieldMapping.end()) {
-    auto vv = bbMapping[bb];
-    auto ff = vv[structMapping[value]];
-    for (auto func : ff) {
-      dataflowResult[structMapping[value]]
-          .second.ptrInfos[fieldMapping[value]]
-          .erase(func);
-#ifdef DEBUG_INFO
-      errs() << "Delete: " << func->getName() << "\n";
-#endif
-    }
-    // dataflowResult[structMapping[value]]
-    //     .second.ptrInfos[fieldMapping[value]]
-    //     .clear();
-    for (auto function : functions) {
-      dataflowResult[structMapping[value]]
-          .second.ptrInfos[fieldMapping[value]]
-          .insert(function);
-      bbMapping[bb][structMapping[value]].insert(function);
-    }
-  }
-}
-static std::set<Function *>
-getFunction(DataflowResult<PointerAnalysisInfo>::Type &dataflowResult,
-            Value *value) {
-  if (fieldMapping.find(value) != fieldMapping.end()) {
-    return dataflowResult[structMapping[value]]
-        .second.ptrInfos[fieldMapping[value]];
-  }
-  return std::set<Function *>();
 }
 static void dumpInst(Instruction *inst) {
 #ifdef DEBUG_INFO
   inst->dump();
 #endif
 }
+static void dumpInfo(Value *value, ValueSet valueSet) {
+#ifdef DEBUG_INFO
+  errs() << value->getName() << ": ";
+  bool first = true;
+  for (auto v : valueSet) {
+    if (first) {
+      first = false;
+    } else {
+      errs() << ", ";
+    }
+    errs() << v->getName();
+  }
+  errs() << "\n";
+#endif
+}
+static ValueSet resolveObjInfo(Value *value, ValueMap<ValueSet> &valueMap) {
+  ValueSet ans;
+  ValueSet vWorkList{value};
+  while (!vWorkList.empty()) {
+    auto v = *vWorkList.begin();
+    vWorkList.erase(vWorkList.begin());
+    if (valueMap.find(v) != valueMap.end()) {
+      for (auto v_add : valueMap[v]) {
+        vWorkList.insert(v_add);
+      }
+    } else {
+      ans.insert(v);
+    }
+  }
+  return ans;
+}
+static FunctionMap<DataflowResult<PointerAnalysisInfo>::Type> results;
+static FunctionSet worklist;
+static FunctionMap<ValueSet> returns;
+static FunctionSet allFunctions;
+static FunctionMap<bool> needReturn;
 class PointerAnalysisVisitor
     : public DataflowVisitor<struct PointerAnalysisInfo> {
 public:
@@ -98,14 +85,17 @@ public:
   void merge(PointerAnalysisInfo *dest,
              const PointerAnalysisInfo &src) override {
     for (auto src_info : src.ptrInfos) {
-      auto inst = src_info.first;
-      auto functionSet = src_info.second;
-      if (dest->ptrInfos.find(inst) != dest->ptrInfos.end()) {
-        for (auto function : functionSet) {
-          dest->ptrInfos[inst].insert(function);
-        }
-      } else {
-        dest->ptrInfos[inst] = functionSet;
+      auto v = src_info.first;
+      auto valueSet = src_info.second;
+      for (auto value : valueSet) {
+        dest->ptrInfos[v].insert(value);
+      }
+    }
+    for (auto src_info : src.objInfos) {
+      auto v = src_info.first;
+      auto valueSet = src_info.second;
+      for (auto value : valueSet) {
+        dest->objInfos[v].insert(value);
       }
     }
   }
@@ -116,111 +106,143 @@ public:
     if (isa<MemIntrinsic>(inst)) {
       return;
     }
-    if (auto allocaInst = dyn_cast<AllocaInst>(inst)) {
-      auto allocaType = allocaInst->getAllocatedType();
-      if (allocaType->isStructTy() || allocaType->isArrayTy() ||
-          allocaType->isPointerTy()) {
-        dumpInst(allocaInst);
-        structMapping[allocaInst->getOperand(0)] = allocaInst->getParent();
-      }
-    }
-    if (auto loadInst = dyn_cast<LoadInst>(inst)) {
-      dumpInst(inst);
-      auto src = loadInst->getOperand(0);
-      if (src->getType()->isPointerTy()) {
-        fieldMapping[inst] = src;
-      }
-      if (dfval->ptrInfos.find(src) != dfval->ptrInfos.end()) {
-        dfval->ptrInfos[inst] = dfval->ptrInfos[src];
-      }
-      auto funcs = getFunction(funcPtrResults[inst->getFunction()], src);
-      if (!funcs.empty()) {
-        dfval->ptrInfos[inst] = funcs;
-      }
+    if (needReturn[inst->getFunction()]) {
+      return;
     }
     if (auto storeInst = dyn_cast<StoreInst>(inst)) {
       dumpInst(inst);
       auto src = storeInst->getOperand(0);
-      auto dst = storeInst->getOperand(1);
-      std::set<Function *> functionSet;
-      if (auto function = dyn_cast<Function>(src)) {
-        functionSet.insert(function);
-      } else if (dfval->ptrInfos.find(src) != dfval->ptrInfos.end()) {
-        functionSet = dfval->ptrInfos[src];
+      auto dstValue = storeInst->getOperand(1);
+      for (auto dst : resolveObjInfo(dstValue, dfval->objInfos)) {
+        dfval->ptrInfos[dst] = resolveObjInfo(src, dfval->objInfos);
+        dumpInfo(dst, dfval->ptrInfos[dst]);
       }
-      if (!functionSet.empty()) {
-        dfval->ptrInfos[dst] = functionSet;
+    }
+    if (auto loadInst = dyn_cast<LoadInst>(inst)) {
+      dumpInst(inst);
+      auto srcValue = loadInst->getOperand(0);
+      auto dst = loadInst;
+      ValueSet loadSet;
+      for (auto src : resolveObjInfo(srcValue, dfval->objInfos)) {
+        for (auto value : dfval->ptrInfos[src]) {
+          loadSet.insert(value);
+        }
       }
-      addFunction(funcPtrResults[inst->getFunction()], dst, functionSet,
-                  inst->getParent());
+      dfval->objInfos[dst] = loadSet;
+      dumpInfo(dst, loadSet);
     }
     if (auto callInst = dyn_cast<CallInst>(inst)) {
       dumpInst(inst);
-      auto src = callInst->getCalledOperand();
-      std::set<Function *> functionSet;
-      if (auto function = dyn_cast<Function>(src)) {
-        functionSet.insert(function);
-      } else if (dfval->ptrInfos.find(src) != dfval->ptrInfos.end()) {
-        functionSet = dfval->ptrInfos[src];
-      }
-      if (!functionSet.empty()) {
-        dfval->ptrInfos[src] = functionSet;
-        res[inst] = functionSet;
-      }
-      // update return values
-      dfval->ptrInfos[inst].clear();
-      for (auto function : functionSet) {
-        for (auto addfunc : returnFunctions[function]) {
-          dfval->ptrInfos[inst].insert(addfunc);
+      // get Possible CalledFunctions
+      auto calledFunctions =
+          resolveObjInfo(callInst->getCalledValue(), dfval->objInfos);
+      dumpInfo(callInst->getCalledValue(), calledFunctions);
+      // process Args
+      for (int i = 0; i < callInst->getNumArgOperands(); i++) {
+        auto argi = callInst->getOperand(i);
+        auto argiType = argi->getType();
+        if (!argiType->isPointerTy()) {
+          continue;
+        }
+        // get Possible argi Objects
+        auto argiValues = resolveObjInfo(argi, dfval->objInfos);
+        dumpInfo(argi, argiValues);
+        for (auto calledFunction : calledFunctions) {
+          auto called = dyn_cast<Function>(calledFunction);
+          if (!called)
+            continue;
+          auto parami = called->getArg(i);
+          auto objInfos = results[called][&*called->begin()].first.objInfos;
+          auto ptrInfos = results[called][&*called->begin()].first.ptrInfos;
+          // pass ptrInfo and objInfo to CalledFunction
+          for (auto value : dfval->objInfos) {
+            auto keyValue = value.first;
+            auto valueSet = value.second;
+            for (auto v : valueSet) {
+              results[called][&*called->begin()]
+                  .first.objInfos[keyValue]
+                  .insert(v);
+            }
+          }
+          for (auto value : dfval->ptrInfos) {
+            auto keyValue = value.first;
+            auto valueSet = value.second;
+            for (auto v : valueSet) {
+              results[called][&*called->begin()]
+                  .first.ptrInfos[keyValue]
+                  .insert(v);
+            }
+          }
+          // pass ArgValues
+          for (auto argiValue : argiValues) {
+            results[called][&*called->begin()].first.objInfos[parami].insert(
+                argiValue);
+          }
+          if (!(objInfos ==
+                results[called][&*called->begin()].first.objInfos) ||
+              !(ptrInfos ==
+                results[called][&*called->begin()].first.ptrInfos)) {
+            worklist.insert(called);
+            needReturn[callInst->getFunction()] = true;
+            worklist.insert(callInst->getFunction());
+          }
         }
       }
-      // update args
-      for (int i = 0; i < callInst->getNumArgOperands(); i++) {
-        auto arg = callInst->getArgOperand(i);
-        if (arg->getType()->isPointerTy() &&
-            arg->getType()->getPointerElementType()->isFunctionTy() &&
-            dfval->ptrInfos.find(arg) != dfval->ptrInfos.end()) {
-          auto functions = dfval->ptrInfos[arg];
-          for (auto function : dfval->ptrInfos[src]) {
-            auto dataflowResult = &funcPtrResults[function];
-            auto bb_begin_info = &(*dataflowResult)[&*function->begin()].first;
-            auto ori_info = *bb_begin_info;
-            for (auto add_function : functions) {
-              bb_begin_info->ptrInfos[function->getArg(i)].insert(add_function);
-            }
-            if (!(ori_info == *bb_begin_info)) {
-              todoFunctions.insert(function);
+      // pass return ptrInfo
+      ValueMap<ValueSet> changed;
+      for (auto calledFunction : calledFunctions) {
+        auto called = dyn_cast<Function>(calledFunction);
+        if (!called)
+          continue;
+        for (auto it = called->begin(); it != called->end(); it++) {
+          auto bb = &*it;
+          if (succ_begin(bb) != succ_end(bb)) {
+            continue;
+          }
+          auto ptrInfos = results[called][bb].second.ptrInfos;
+          for (auto ptr : ptrInfos) {
+            auto keyValue = ptr.first;
+            for (auto addValue : ptr.second) {
+              changed[keyValue].insert(addValue);
+              dfval->ptrInfos[keyValue].insert(addValue);
 #ifdef DEBUG_INFO
-              errs() << function->getName() << ": "
-                     << function->getArg(i)->getName() << "\n";
-              for (auto f : functions) {
-                errs() << "Arg pass Function: " << f->getName() << "\n";
-              }
+              errs() << keyValue->getName() << " add: " << addValue->getName()
+                     << "\n";
 #endif
             }
           }
         }
       }
+      for (auto pair : changed) {
+        dfval->ptrInfos[pair.first] = pair.second;
+      }
+      // process return values
+      auto dst = callInst;
+      dfval->objInfos[dst].clear();
+      for (auto calledFunction : calledFunctions) {
+        auto called = dyn_cast<Function>(calledFunction);
+        if (!called)
+          continue;
+        for (auto value : returns[called]) {
+          dfval->objInfos[dst].insert(value);
+        }
+      }
     }
     if (auto gepInst = dyn_cast<GetElementPtrInst>(inst)) {
-      dumpInst(gepInst);
-      // Value *value = gepInst->getOperand(1);
-      fieldMapping[gepInst] = gepInst->getOperand(1);
+      dumpInst(inst);
+      auto src = gepInst->getOperand(0);
+      auto dst = gepInst;
+      dfval->objInfos[dst] = resolveObjInfo(src, dfval->objInfos);
+      dumpInfo(dst, dfval->objInfos[dst]);
     }
     if (auto returnInst = dyn_cast<ReturnInst>(inst)) {
-      auto returnType = inst->getFunction()->getReturnType();
-      if (returnType->isPointerTy() &&
-          returnType->getPointerElementType()->isFunctionTy()) {
-        dumpInst(returnInst);
-        auto oriFunctions = returnFunctions[inst->getFunction()];
-        returnFunctions[inst->getFunction()] =
-            dfval->ptrInfos[returnInst->getReturnValue()];
-#ifdef DEBUG_INFO
-        errs() << "Return Function: "
-               << returnFunctions[inst->getFunction()].size() << "\n";
-#endif
-        if (oriFunctions != returnFunctions[inst->getFunction()]) {
-          todoFunctions = allFuntions;
+      dumpInst(inst);
+      auto returnValue = returnInst->getReturnValue();
+      auto returnSet = resolveObjInfo(returnValue, dfval->objInfos);
+      if (returns[returnInst->getFunction()] != returnSet) {
+        returns[returnInst->getFunction()] = returnSet;
+        for (auto function : allFunctions) {
+          worklist.insert(function);
         }
       }
     }
@@ -232,59 +254,64 @@ public:
   static char ID;
   PointerAnalysisPass() : ModulePass(ID) {}
   bool runOnModule(Module &M) override {
-    todoFunctions.clear();
-    fieldMapping.clear();
-    structMapping.clear();
-    std::set<Function *> funcWorkList;
-    for (auto &function : M) {
-      funcWorkList.insert(&function);
-      funcPtrResults[&function] = DataflowResult<PointerAnalysisInfo>::Type();
-      allFuntions.insert(&function);
-    }
     PointerAnalysisVisitor visitor;
-    while (!funcWorkList.empty()) {
-      auto function = *funcWorkList.begin();
-      funcWorkList.erase(funcWorkList.begin());
+
+    for (auto it = M.begin(); it != M.end(); it++) {
+      worklist.insert(&*it);
+      allFunctions.insert(&*it);
+      needReturn[&*it] = false;
+    }
+    while (!worklist.empty()) {
+      auto function = *worklist.begin();
+      worklist.erase(worklist.begin());
+      needReturn[function] = false;
       if (function->empty()) {
         continue;
       }
 #ifdef DEBUG_INFO
-      errs() << "Function: " << function->getName() << "\n";
+      errs() << "Process Function: " << function->getName() << "\n";
 #endif
-      auto &bb_begin = *function->begin();
-      compForwardDataflow(function, &visitor, &funcPtrResults[function],
-                          funcPtrResults[function][&bb_begin].second);
-      while (!todoFunctions.empty()) {
-        auto todoFuncion = *todoFunctions.begin();
-        todoFunctions.erase(todoFunctions.begin());
-        funcWorkList.insert(todoFuncion);
-      }
+      auto bb_begin = &*function->begin();
+      compForwardDataflow(function, &visitor, &results[function],
+                          results[function][bb_begin].first);
     }
 
-    // for (auto funcPtrRes : funcPtrResults) {
-    //   for (auto bbResult : funcPtrRes.second) {
-    //     auto ptrInfos = bbResult.second.second.ptrInfos;
-    //     for (auto ptrInfo : ptrInfos) {
-    //       auto inst = ptrInfo.first;
-    //       for (auto function : ptrInfo.second) {
-    //         res[inst].insert(function);
-    //       }
-    //     }
-    //   }
-    // }
-    for (auto info : res) {
-      if (auto callInst = dyn_cast<CallInst>(info.first)) {
-        errs() << callInst->getDebugLoc().getLine() << " :";
-        bool first = true;
-        for (auto function : info.second) {
-          if (first) {
-            first = false;
-          } else {
-            errs() << ",";
+    // print Results
+    for (auto &function : M) {
+#ifdef DEBUG_INFO
+      errs() << "Print Function: " << function.getName() << "\n";
+#endif
+      for (auto &bb : function) {
+        for (auto it = bb.begin(); it != bb.end(); it++) {
+          auto inst = &*it;
+          auto callInst = dyn_cast<CallInst>(inst);
+          if (!callInst || isa<DbgInfoIntrinsic>(inst) ||
+              isa<MemIntrinsic>(inst)) {
+            continue;
           }
-          errs() << " " << function->getName();
+          dumpInst(inst);
+          auto calledValue = callInst->getCalledValue();
+          auto objInfos = results[&function][&bb].second.objInfos;
+          auto calledFunctions = resolveObjInfo(calledValue, objInfos);
+          dumpInfo(calledValue, calledFunctions);
+          errs() << callInst->getDebugLoc().getLine() << " :";
+          bool first = true;
+          for (auto calledFunction : calledFunctions) {
+            if (!calledFunction->hasName())
+              continue;
+            auto called = dyn_cast<Function>(calledFunction);
+            if (!called)
+              continue;
+            if (first) {
+              first = false;
+              errs() << " ";
+            } else {
+              errs() << ", ";
+            }
+            errs() << called->getName();
+          }
+          errs() << "\n";
         }
-        errs() << "\n";
       }
     }
     return false;
