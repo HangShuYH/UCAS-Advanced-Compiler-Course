@@ -14,9 +14,11 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
+#include <deque>
 #include <map>
 #include <memory>
 #include <set>
+#include <vector>
 using namespace llvm;
 using ValueSet = std::set<Value *>;
 using FunctionSet = std::set<Function *>;
@@ -74,7 +76,7 @@ static ValueSet resolveObjInfo(Value *value, ValueMap<ValueSet> &valueMap) {
   return ans;
 }
 static FunctionMap<DataflowResult<PointerAnalysisInfo>::Type> results;
-static FunctionSet worklist;
+static std::deque<Function *> worklist;
 static FunctionMap<ValueSet> returns;
 static FunctionSet allFunctions;
 static FunctionMap<bool> needReturn;
@@ -138,6 +140,7 @@ public:
           resolveObjInfo(callInst->getCalledValue(), dfval->objInfos);
       dumpInfo(callInst->getCalledValue(), calledFunctions);
       // process Args
+      FunctionSet adds;
       for (int i = 0; i < callInst->getNumArgOperands(); i++) {
         auto argi = callInst->getOperand(i);
         auto argiType = argi->getType();
@@ -182,13 +185,12 @@ public:
                 results[called][&*called->begin()].first.objInfos) ||
               !(ptrInfos ==
                 results[called][&*called->begin()].first.ptrInfos)) {
-            worklist.insert(called);
-            needReturn[callInst->getFunction()] = true;
-            worklist.insert(callInst->getFunction());
+            adds.insert(called);
           }
         }
       }
       // pass return ptrInfo
+
       ValueMap<ValueSet> changed;
       for (auto calledFunction : calledFunctions) {
         auto called = dyn_cast<Function>(calledFunction);
@@ -214,11 +216,27 @@ public:
         }
       }
       for (auto pair : changed) {
+        if (dfval->ptrInfos[pair.first] == pair.second)
+          continue;
+#ifdef DEBUG_INFO
+        errs() << "Before: ";
+        dumpInfo(pair.first, dfval->ptrInfos[pair.first]);
+        errs() << "After: ";
+        dumpInfo(pair.first, pair.second);
+#endif
         dfval->ptrInfos[pair.first] = pair.second;
+      }
+      if (!adds.empty()) {
+        worklist.push_back(callInst->getFunction());
+        needReturn[callInst->getFunction()] = true;
+      }
+      for (auto add : adds) {
+        worklist.push_front(add);
       }
       // process return values
       auto dst = callInst;
       dfval->objInfos[dst].clear();
+
       for (auto calledFunction : calledFunctions) {
         auto called = dyn_cast<Function>(calledFunction);
         if (!called)
@@ -242,7 +260,7 @@ public:
       if (returns[returnInst->getFunction()] != returnSet) {
         returns[returnInst->getFunction()] = returnSet;
         for (auto function : allFunctions) {
-          worklist.insert(function);
+          worklist.push_back(function);
         }
       }
     }
@@ -257,7 +275,7 @@ public:
     PointerAnalysisVisitor visitor;
 
     for (auto it = M.begin(); it != M.end(); it++) {
-      worklist.insert(&*it);
+      worklist.push_back(&*it);
       allFunctions.insert(&*it);
       needReturn[&*it] = false;
     }
